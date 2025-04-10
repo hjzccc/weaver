@@ -74,6 +74,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,7 +88,7 @@ import (
 
 const (
 	// Size of the header included in each message.
-	msgHeaderSize = 16 + 8 + traceHeaderLen // handler_key + deadline + trace_context
+	msgHeaderSize = 16 + 8 + traceHeaderLen + 16 + 8 // RIP+RSP+PID
 )
 
 // Connection allows a client to send RPCs.
@@ -384,6 +386,7 @@ func (rc *reconnectingConnection) Call(ctx context.Context, h MethodKey, arg []b
 	return nil, ctx.Err()
 }
 
+func GetRSP() uintptr
 func (rc *reconnectingConnection) callOnce(ctx context.Context, h MethodKey, arg []byte, opts CallOptions) ([]byte, error) {
 	var hdr [msgHeaderSize]byte
 	copy(hdr[0:], h[:])
@@ -402,6 +405,17 @@ func (rc *reconnectingConnection) callOnce(ctx context.Context, h MethodKey, arg
 		binary.LittleEndian.PutUint64(hdr[16:], uint64(micros))
 	}
 
+	cur_rsp := GetRSP() + 8
+	cur_rip, _, _, _ := runtime.Caller(0)
+	cur_pid := os.Getpid()
+	binary.LittleEndian.PutUint64(hdr[49:], uint64(cur_rsp))
+	binary.LittleEndian.PutUint64(hdr[57:], uint64(cur_rip))
+	binary.LittleEndian.PutUint64(hdr[65:], uint64(cur_pid))
+	// fmt.Println("----------------------print when calling-------------------------------")
+	// fmt.Println("cur_rsp:", cur_rsp)
+	// fmt.Println("cur_rip:", cur_rip)
+	// fmt.Println("cur_pid:", cur_pid)
+	// fmt.Println("----------------------print end when calling-------------------------------")
 	// Send trace information in the header.
 	writeTraceContext(ctx, hdr[24:])
 
@@ -918,6 +932,9 @@ func (c *serverConnection) readRequests(ctx context.Context, hmap *HandlerMap, o
 				t := time.AfterFunc(c.opts.InlineHandlerDuration, func() {
 					c.readRequests(ctx, hmap, onDone)
 				})
+				// fmt.Println("----------------------print when receiving-------------------------------")
+				// fmt.Println("request  is coming:", c.c.LocalAddr(), c.c.RemoteAddr())
+				// fmt.Println("----------------------print end when receiving-------------------------------")
 				c.runHandler(hmap, id, msg)
 				if !t.Stop() {
 					// Another goroutine is reading incoming requests: bail out.
